@@ -16,17 +16,15 @@ import hudson.util.VariableResolver;
 import io.kubernetes.client.openapi.ApiClient;
 import io.kubernetes.client.openapi.ApiException;
 import io.kubernetes.client.openapi.models.V1Namespace;
+import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import io.kubernetes.client.openapi.models.V1Secret;
-import io.kubernetes.client.openapi.models.V1SecretBuilder;
 import io.kubernetes.client.util.ClientBuilder;
 import io.kubernetes.client.util.Config;
 import io.kubernetes.client.util.KubeConfig;
 import io.kubernetes.client.util.Yaml;
 import io.kubernetes.client.util.credentials.ClientCertificateAuthentication;
-import io.kubesphere.jenkins.kubernetes.generated.KubernetesModelClasses;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang3.tuple.MutablePair;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +39,6 @@ import java.io.Reader;
 import java.io.StringReader;
 import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -55,97 +52,6 @@ public class KubernetesClientWrapper {
     private VariableResolver<String> variableResolver;
 
     private boolean deleteResource;
-
-
-    private static Map<String, String> apiGroups = new HashMap<>();
-    private static List<String> apiVersions = new ArrayList<>();
-
-
-    private static void initApiGroupMap() {
-        apiGroups.put("Admissionregistration", "admissionregistration.k8s.io");
-        apiGroups.put("Apiextensions", "apiextensions.k8s.io");
-        apiGroups.put("Apiregistration", "apiregistration.k8s.io");
-        apiGroups.put("Apps", "apps");
-        apiGroups.put("Authentication", "authentication.k8s.io");
-        apiGroups.put("Authorization", "authorization.k8s.io");
-        apiGroups.put("Autoscaling", "autoscaling");
-        apiGroups.put("Extensions", "extensions");
-        apiGroups.put("Batch", "batch");
-        apiGroups.put("Certificates", "certificates.k8s.io");
-        apiGroups.put("Networking", "networking.k8s.io");
-        apiGroups.put("Policy", "policy");
-        apiGroups.put("RbacAuthorization", "rbac.authorization.k8s.io");
-        apiGroups.put("Scheduling", "scheduling.k8s.io");
-        apiGroups.put("Settings", "settings.k8s.io");
-        apiGroups.put("Storage", "storage.k8s.io");
-    }
-
-    private static void initApiVersionList() {
-        // Order important
-        apiVersions.add("V2beta1");
-        apiVersions.add("V2beta2");
-        apiVersions.add("V2alpha1");
-        apiVersions.add("V1beta2");
-        apiVersions.add("V1beta1");
-        apiVersions.add("V1alpha1");
-        apiVersions.add("V1");
-    }
-
-    static {
-        try {
-            initModelMap();
-        } catch (Exception ex) {
-            LOGGER.error("Unexpected exception while loading classes: " + ex);
-        }
-    }
-
-    private static Pair<String, String> getApiGroup(String name) {
-        MutablePair<String, String> parts = new MutablePair<>();
-        for (Map.Entry<String, String> apiGroup : apiGroups.entrySet()) {
-            if (name.startsWith(apiGroup.getKey())) {
-                parts.left = apiGroup.getValue();
-                parts.right = name.substring(apiGroup.getKey().length());
-                break;
-            }
-        }
-        if (parts.left == null) {
-            parts.right = name;
-        }
-
-        return parts;
-    }
-
-    private static Pair<String, String> getApiVersion(String name) {
-        MutablePair<String, String> parts = new MutablePair<>();
-        for (String version : apiVersions) {
-            if (name.startsWith(version)) {
-                parts.left = version.toLowerCase();
-                parts.right = name.substring(version.length());
-                break;
-            }
-        }
-        if (parts.left == null) {
-            parts.right = name;
-        }
-
-        return parts;
-    }
-
-    private static void initModelMap() throws IOException {
-        initApiGroupMap();
-        initApiVersionList();
-        for (Class clazz : KubernetesModelClasses.getAllClasses()) {
-            String apiGroupVersion = "";
-            String kind = "";
-            Pair<String, String> nameParts = getApiGroup(clazz.getSimpleName());
-            apiGroupVersion += nameParts.getLeft() == null ? "" : nameParts.getLeft() + "/";
-
-            nameParts = getApiVersion(nameParts.getRight());
-            apiGroupVersion += nameParts.getLeft() == null ? "" : nameParts.getLeft();
-            kind += nameParts.getRight();
-            Yaml.addModelMap(apiGroupVersion, kind, clazz);
-        }
-    }
 
 
     public KubernetesClientWrapper(String kubeConfig) {
@@ -325,14 +231,15 @@ public class KubernetesClientWrapper {
 
         Map<String, String> data = new HashMap<>();
         data.put(".dockercfg", dockercfg);
-        V1Secret secret = new V1SecretBuilder()
-                .withNewMetadata()
-                .withName(secretName)
-                .withNamespace(kubernetesNamespace)
-                .endMetadata()
-                .withStringData(data)
-                .withType("kubernetes.io/dockercfg")
-                .build();
+
+        V1Secret secret = new V1Secret();
+        V1ObjectMeta metadata = new V1ObjectMeta();
+        metadata.setName(secretName);
+        metadata.setNamespace(kubernetesNamespace);
+        secret.setMetadata(metadata);
+        secret.setStringData(data);
+        secret.setType("kubernetes.io/dockercfg");
+
         handleResource(secret);
     }
 

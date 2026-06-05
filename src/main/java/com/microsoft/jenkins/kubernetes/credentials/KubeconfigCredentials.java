@@ -11,10 +11,14 @@ import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.CredentialsScope;
 import com.cloudbees.plugins.credentials.CredentialsSnapshotTaker;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
+import com.cloudbees.plugins.credentials.common.StandardUsernamePasswordCredentials;
 import com.cloudbees.plugins.credentials.common.StandardUsernameCredentials;
 import com.cloudbees.plugins.credentials.domains.DomainRequirement;
 import com.cloudbees.plugins.credentials.impl.BaseStandardCredentials;
-import com.microsoft.jenkins.azurecommons.remote.SSHClient;
+import com.cloudbees.jenkins.plugins.sshcredentials.SSHUserPrivateKey;
+import com.jcraft.jsch.ChannelSftp;
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.Session;
 import com.microsoft.jenkins.kubernetes.util.Constants;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import hudson.DescriptorExtensionList;
@@ -33,16 +37,22 @@ import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 
-import javax.annotation.Nonnull;
+import jakarta.annotation.Nonnull;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
+import java.util.Properties;
 import java.util.logging.Logger;
 
 public class KubeconfigCredentials extends BaseStandardCredentials implements AncestorAware {
     private static final long serialVersionUID = 1L;
+
+    private static final int SSH_SESSION_TIMEOUT = 30_000;
+    private static final int SSH_CHANNEL_TIMEOUT = 10_000;
 
     private final KubeconfigSource kubeconfigSource;
 
@@ -284,11 +294,52 @@ public class KubeconfigCredentials extends BaseStandardCredentials implements An
             }
 
             try {
-                SSHClient sshClient = new SSHClient(getHost(), getPort(), creds);
-                try (SSHClient connected = sshClient.connect()) {
+                JSch jsch = new JSch();
+                Session session = null;
+                ChannelSftp sftpChannel = null;
+                try {
+                    // Configure authentication
+                    if (creds instanceof SSHUserPrivateKey) {
+                        SSHUserPrivateKey sshKey =
+                                (SSHUserPrivateKey) creds;
+                        String username = sshKey.getUsername();
+                        List<String> privateKeys = sshKey.getPrivateKeys();
+                        if (privateKeys != null && !privateKeys.isEmpty()) {
+                            String privateKey = privateKeys.get(0);
+                            jsch.addIdentity("jenkins-ssh-key",
+                                    privateKey.getBytes(StandardCharsets.UTF_8),
+                                    null,
+                                    null);
+                        }
+                        session = jsch.getSession(username, getHost(), getPort());
+                    } else if (creds instanceof StandardUsernamePasswordCredentials) {
+                        StandardUsernamePasswordCredentials pwdCreds =
+                                (StandardUsernamePasswordCredentials) creds;
+                        session = jsch.getSession(pwdCreds.getUsername(), getHost(), getPort());
+                        session.setPassword(pwdCreds.getPassword().getPlainText());
+                    } else {
+                        throw new IllegalStateException("Unsupported SSH credential type: "
+                                + creds.getClass().getName());
+                    }
+
+                    Properties config = new Properties();
+                    config.put("StrictHostKeyChecking", "no");
+                    session.setConfig(config);
+                    session.connect(SSH_SESSION_TIMEOUT);
+
+                    sftpChannel = (ChannelSftp) session.openChannel("sftp");
+                    sftpChannel.connect(SSH_CHANNEL_TIMEOUT);
+
                     try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                        connected.copyFrom(Constants.KUBECONFIG_FILE, out);
+                        sftpChannel.get(Constants.KUBECONFIG_FILE, out);
                         return out.toString(Constants.DEFAULT_CHARSET);
+                    }
+                } finally {
+                    if (sftpChannel != null && sftpChannel.isConnected()) {
+                        sftpChannel.disconnect();
+                    }
+                    if (session != null && session.isConnected()) {
+                        session.disconnect();
                     }
                 }
             } catch (Exception ex) {

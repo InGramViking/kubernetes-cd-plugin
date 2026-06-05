@@ -7,6 +7,7 @@
 package com.microsoft.jenkins.kubernetes;
 
 import hudson.AbortException;
+import hudson.EnvVars;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
@@ -20,7 +21,7 @@ import hudson.tasks.Builder;
 import jenkins.tasks.SimpleBuildStep;
 import org.kohsuke.stapler.DataBoundConstructor;
 
-import javax.annotation.Nonnull;
+import jakarta.annotation.Nonnull;
 import java.io.IOException;
 
 public class KubernetesDeploy extends Builder implements SimpleBuildStep {
@@ -38,10 +39,11 @@ public class KubernetesDeploy extends Builder implements SimpleBuildStep {
                         @Nonnull TaskListener listener) throws InterruptedException, IOException {
 
         listener.getLogger().println(Messages.KubernetesDeploy_starting());
-        this.context.configure(run, workspace, launcher, listener);
-        this.context.executeCommands();
+        EnvVars envVars = run.getEnvironment(listener);
+        this.context.configure(run, workspace, launcher, listener, envVars);
+        this.context.deploy();
 
-        if (context.getLastCommandState().isError()) {
+        if (context.getCommandState().isError()) {
             run.setResult(Result.FAILURE);
             throw new AbortException(Messages.KubernetesDeploy_endWithErrorState(context.getCommandState()));
         } else {

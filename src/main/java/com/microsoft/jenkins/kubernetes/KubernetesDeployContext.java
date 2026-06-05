@@ -9,16 +9,15 @@ package com.microsoft.jenkins.kubernetes;
 import com.cloudbees.plugins.credentials.CredentialsMatchers;
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
+import com.cloudbees.plugins.credentials.common.StandardUsernameCredentials;
 import com.cloudbees.plugins.credentials.domains.DomainRequirement;
+import com.cloudbees.plugins.credentials.common.StandardUsernamePasswordCredentials;
+import com.cloudbees.jenkins.plugins.sshcredentials.SSHUserPrivateKey;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.microsoft.jenkins.azurecommons.JobContext;
-import com.microsoft.jenkins.azurecommons.command.BaseCommandContext;
-import com.microsoft.jenkins.azurecommons.command.CommandService;
-import com.microsoft.jenkins.azurecommons.command.IBaseCommandData;
-import com.microsoft.jenkins.azurecommons.command.ICommand;
-import com.microsoft.jenkins.azurecommons.command.SimpleBuildStepExecution;
-import com.microsoft.jenkins.azurecommons.remote.SSHClient;
+import com.jcraft.jsch.ChannelExec;
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.Session;
 import com.microsoft.jenkins.kubernetes.command.DeploymentCommand;
 import com.microsoft.jenkins.kubernetes.credentials.ClientWrapperFactory;
 import com.microsoft.jenkins.kubernetes.credentials.ConfigFileCredentials;
@@ -29,6 +28,7 @@ import com.microsoft.jenkins.kubernetes.credentials.SSHCredentials;
 import com.microsoft.jenkins.kubernetes.credentials.TextCredentials;
 import com.microsoft.jenkins.kubernetes.util.Constants;
 import com.microsoft.jenkins.kubernetes.wrapper.KubernetesClientWrapper;
+import hudson.AbortException;
 import hudson.EnvVars;
 import hudson.Extension;
 import hudson.FilePath;
@@ -39,9 +39,11 @@ import hudson.model.TaskListener;
 import hudson.security.ACL;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
+import jakarta.annotation.Nonnull;
 import org.apache.commons.lang3.StringUtils;
 import org.jenkinsci.plugins.docker.commons.credentials.DockerRegistryEndpoint;
 import org.jenkinsci.plugins.docker.commons.credentials.DockerRegistryToken;
+import org.jenkinsci.plugins.workflow.steps.Step;
 import org.jenkinsci.plugins.workflow.steps.StepContext;
 import org.jenkinsci.plugins.workflow.steps.StepDescriptor;
 import org.jenkinsci.plugins.workflow.steps.StepExecution;
@@ -50,16 +52,16 @@ import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.QueryParameter;
 
-import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 
-public class KubernetesDeployContext extends BaseCommandContext implements
-        DeploymentCommand.IDeploymentCommand {
+public class KubernetesDeployContext extends Step implements DeploymentCommand.IDeploymentCommand {
 
     private String kubeconfigId;
 
@@ -77,24 +79,124 @@ public class KubernetesDeployContext extends BaseCommandContext implements
 
     private boolean deleteResource;
 
+    // Transient context fields (not serialized)
+    private transient Run<?, ?> run;
+    private transient FilePath workspace;
+    private transient Launcher launcher;
+    private transient TaskListener listener;
+    private transient EnvVars envVars;
+    private DeploymentCommand.CommandState commandState = DeploymentCommand.CommandState.Unknown;
+
+    private static final int SSH_SESSION_TIMEOUT = 15_000;
+    private static final int SSH_CHANNEL_TIMEOUT = 5_000;
+    private static final int SSH_SLEEP_INTERVAL = 100;
+
     @DataBoundConstructor
     public KubernetesDeployContext() {
         enableConfigSubstitution = true;
     }
 
+    /**
+     * Prepare the context with the run environment.
+     */
     public void configure(
-            @Nonnull Run<?, ?> run,
-            @Nonnull FilePath workspace,
-            @Nonnull Launcher launcher,
-            @Nonnull TaskListener listener) throws IOException, InterruptedException {
+            @Nonnull Run<?, ?> runIn,
+            @Nonnull FilePath workspaceIn,
+            @Nonnull Launcher launcherIn,
+            @Nonnull TaskListener listenerIn,
+            EnvVars envVarsIn) {
+        this.run = runIn;
+        this.workspace = workspaceIn;
+        this.launcher = launcherIn;
+        this.listener = listenerIn;
+        this.envVars = envVarsIn;
+    }
 
-        CommandService commandService = CommandService.builder()
-                .withSingleCommand(DeploymentCommand.class)
-                .withStartCommand(DeploymentCommand.class)
-                .build();
+    /**
+     * Execute the deployment using the configured context.
+     */
+    public void deploy() {
+        DeploymentCommand.execute(this);
+    }
 
-        final JobContext jobContext = new JobContext(run, workspace, launcher, listener);
-        super.configure(jobContext, commandService);
+    /**
+     * Start the pipeline step execution.
+     */
+    public StepExecution start(StepContext context) throws Exception {
+        return new StepExecution(context) {
+            @Override
+            public boolean start() throws Exception {
+                Run<?, ?> currRun = context.get(Run.class);
+                FilePath currWorkspace = context.get(FilePath.class);
+                Launcher currLauncher = context.get(Launcher.class);
+                TaskListener currListener = context.get(TaskListener.class);
+                EnvVars currEnvVars = context.get(EnvVars.class);
+
+                configure(currRun, currWorkspace, currLauncher, currListener, currEnvVars);
+                deploy();
+
+                if (commandState.isError()) {
+                    context.onFailure(new AbortException(
+                            Messages.KubernetesDeploy_endWithErrorState(commandState)));
+                } else {
+                    context.onSuccess(null);
+                }
+                return true;
+            }
+
+            @Override
+            public void stop(Throwable cause) throws Exception {
+            }
+        };
+    }
+
+    public Run<?, ?> getRun() {
+        return run;
+    }
+
+    public FilePath getWorkspace() {
+        return workspace;
+    }
+
+    public Launcher getLauncher() {
+        return launcher;
+    }
+
+    public TaskListener getTaskListener() {
+        return listener;
+    }
+
+    @Override
+    public EnvVars getEnvVars() {
+        if (envVars == null && run != null) {
+            try {
+                envVars = run.getEnvironment(listener);
+            } catch (Exception e) {
+                listener.getLogger().println(Messages.JobContext_failedToGetEnv());
+                envVars = new EnvVars();
+            }
+        }
+        return envVars;
+    }
+
+    public void setEnvVars(EnvVars envVars) {
+        this.envVars = envVars;
+    }
+
+    @Override
+    public void setCommandState(DeploymentCommand.CommandState state) {
+        this.commandState = state;
+    }
+
+    public DeploymentCommand.CommandState getCommandState() {
+        return commandState;
+    }
+
+    @Override
+    public void logError(Exception e) {
+        if (listener != null) {
+            e.printStackTrace(listener.getLogger());
+        }
     }
 
     public String getKubeconfigId() {
@@ -290,16 +392,6 @@ public class KubernetesDeployContext extends BaseCommandContext implements
         }
     }
 
-    @Override
-    public IBaseCommandData getDataForCommand(ICommand command) {
-        return this;
-    }
-
-    @Override
-    public StepExecution startImpl(StepContext context) throws Exception {
-        return new SimpleBuildStepExecution(new KubernetesDeploy(this), context);
-    }
-
     @Extension
     public static final class DescriptorImpl extends StepDescriptor {
         public ListBoxModel doFillCredentialsTypeItems() {
@@ -343,16 +435,16 @@ public class KubernetesDeployContext extends BaseCommandContext implements
         }
 
         private FormValidation verifyConfigurationInternal(Item owner,
-                                                           String configId,
-                                                           String credentialsType,
-                                                           String kubeconfigPath,
-                                                           String sshServer,
-                                                           String sshCredentialsId,
-                                                           String txtServerUrl,
-                                                           String txtCertificateAuthorityData,
-                                                           String txtClientCertificateData,
-                                                           String txtClientKeyData,
-                                                           String configs) {
+                                                            String configId,
+                                                            String credentialsType,
+                                                            String kubeconfigPath,
+                                                            String sshServer,
+                                                            String sshCredentialsId,
+                                                            String txtServerUrl,
+                                                            String txtCertificateAuthorityData,
+                                                            String txtClientCertificateData,
+                                                            String txtClientKeyData,
+                                                            String configs) {
             if (StringUtils.isNotBlank(configId)) {
                 final KubeconfigCredentials credentials = CredentialsMatchers.firstOrNull(
                         CredentialsProvider.lookupCredentials(
@@ -388,24 +480,9 @@ public class KubernetesDeployContext extends BaseCommandContext implements
                             return FormValidation.error(Messages.errorMessage(
                                     Messages.KubernetesDeployContext_sshCredentialsNotSelected()));
                         }
-                        SSHCredentials sshCredentials = new SSHCredentials();
-                        sshCredentials.setSshCredentialsId(StringUtils.trimToEmpty(sshCredentialsId));
-                        sshCredentials.setSshServer(StringUtils.trimToEmpty(sshServer));
                         try {
-                            SSHClient client = new SSHClient(
-                                    sshCredentials.getHost(),
-                                    sshCredentials.getPort(),
-                                    sshCredentials.getSshCredentials(owner));
-                            try (SSHClient connected = client.connect()) {
-                                try {
-                                    connected.execRemote(
-                                            "test -e " + Constants.KUBECONFIG_FILE, false, false);
-                                } catch (SSHClient.ExitStatusException e) {
-                                    return FormValidation.error(Messages.errorMessage(
-                                            Messages.KubernetesDeployContext_cannotFindKubeconfigOnServer(
-                                                    Constants.KUBECONFIG_FILE, sshServer)));
-                                }
-                            }
+                            // Use JSch to verify SSH connectivity and check kubeconfig file existence
+                            validateSshConnection(owner, sshServer, sshCredentialsId);
                         } catch (Exception e) {
                             return FormValidation.error(Messages.errorMessage(
                                     Messages.KubernetesDeployContext_failedOnSSH(e.getMessage())));
@@ -445,6 +522,76 @@ public class KubernetesDeployContext extends BaseCommandContext implements
             return FormValidation.ok(Messages.KubernetesDeployContext_validateSuccess());
         }
 
+        /**
+         * Validate SSH connection by attempting to connect and check for the kubeconfig file.
+         */
+        private void validateSshConnection(Item owner, String sshServer, String sshCredentialsId) throws Exception {
+            SSHCredentials tempCredentials = new SSHCredentials();
+            tempCredentials.setSshCredentialsId(StringUtils.trimToEmpty(sshCredentialsId));
+            tempCredentials.setSshServer(StringUtils.trimToEmpty(sshServer));
+
+            String host = tempCredentials.getHost();
+            int port = tempCredentials.getPort();
+
+            StandardUsernameCredentials credentials = tempCredentials.getSshCredentials(owner);
+
+            JSch jsch = new JSch();
+            Session session = null;
+            try {
+                // Configure authentication
+                if (credentials instanceof SSHUserPrivateKey) {
+                    SSHUserPrivateKey sshKey = (SSHUserPrivateKey) credentials;
+                    String username = sshKey.getUsername();
+                    List<String> privateKeys = sshKey.getPrivateKeys();
+                    if (privateKeys != null && !privateKeys.isEmpty()) {
+                        String privateKey = privateKeys.get(0);
+                        jsch.addIdentity("jenkins-ssh-key",
+                                privateKey.getBytes(StandardCharsets.UTF_8),
+                                null,
+                                null);
+                    }
+                    session = jsch.getSession(username, host, port);
+                } else if (credentials instanceof StandardUsernamePasswordCredentials) {
+                    StandardUsernamePasswordCredentials pwdCreds =
+                            (StandardUsernamePasswordCredentials) credentials;
+                    session = jsch.getSession(pwdCreds.getUsername(), host, port);
+                    session.setPassword(pwdCreds.getPassword().getPlainText());
+                } else {
+                    throw new IllegalStateException("Unsupported SSH credential type: "
+                            + credentials.getClass().getName());
+                }
+
+                Properties config = new Properties();
+                config.put("StrictHostKeyChecking", "no");
+                session.setConfig(config);
+                session.connect(SSH_SESSION_TIMEOUT);
+
+                // Execute remote command to check kubeconfig file existence
+                ChannelExec channel = (ChannelExec) session.openChannel("exec");
+                channel.setCommand("test -e " + Constants.KUBECONFIG_FILE);
+
+                channel.connect(SSH_CHANNEL_TIMEOUT);
+
+                // Wait for the command to complete
+                while (!channel.isClosed()) {
+                    Thread.sleep(SSH_SLEEP_INTERVAL);
+                }
+
+                int exitStatus = channel.getExitStatus();
+                channel.disconnect();
+
+                if (exitStatus != 0) {
+                    throw new Exception("File not found: "
+                            + Messages.KubernetesDeployContext_cannotFindKubeconfigOnServer(
+                            Constants.KUBECONFIG_FILE, sshServer));
+                }
+            } finally {
+                if (session != null && session.isConnected()) {
+                    session.disconnect();
+                }
+            }
+        }
+
         public String getDefaultSecretNamespace() {
             return Constants.DEFAULT_KUBERNETES_NAMESPACE;
         }
@@ -459,13 +606,13 @@ public class KubernetesDeployContext extends BaseCommandContext implements
         }
 
         @Override
-        public java.lang.String getFunctionName() {
+        public String getFunctionName() {
             return "kubernetesDeploy";
         }
 
         @Nonnull
         @Override
-        public java.lang.String getDisplayName() {
+        public String getDisplayName() {
             return Messages.pluginDisplayName();
         }
     }

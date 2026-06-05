@@ -6,12 +6,12 @@
 
 package com.microsoft.jenkins.kubernetes.wrapper;
 
-import com.microsoft.jenkins.kubernetes.util.Constants;
 import com.microsoft.jenkins.kubernetes.util.KubernetesJsonUtils;
 import io.kubernetes.client.openapi.ApiClient;
 import io.kubernetes.client.openapi.ApiException;
 import io.kubernetes.client.openapi.apis.AppsV1Api;
 import io.kubernetes.client.openapi.apis.AutoscalingV1Api;
+import io.kubernetes.client.openapi.apis.AutoscalingV2Api;
 import io.kubernetes.client.openapi.apis.BatchV1Api;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.NetworkingV1Api;
@@ -19,9 +19,11 @@ import io.kubernetes.client.openapi.apis.RbacAuthorizationV1Api;
 import io.kubernetes.client.openapi.models.V1ClusterRole;
 import io.kubernetes.client.openapi.models.V1ClusterRoleBinding;
 import io.kubernetes.client.openapi.models.V1ConfigMap;
+import io.kubernetes.client.openapi.models.V1CronJob;
 import io.kubernetes.client.openapi.models.V1DaemonSet;
 import io.kubernetes.client.openapi.models.V1Deployment;
 import io.kubernetes.client.openapi.models.V1HorizontalPodAutoscaler;
+import io.kubernetes.client.openapi.models.V1Ingress;
 import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1Namespace;
 import io.kubernetes.client.openapi.models.V1NetworkPolicy;
@@ -39,6 +41,7 @@ import io.kubernetes.client.openapi.models.V1ServiceAccount;
 import io.kubernetes.client.openapi.models.V1ServicePort;
 import io.kubernetes.client.openapi.models.V1StatefulSet;
 import io.kubernetes.client.openapi.models.V1Status;
+import io.kubernetes.client.openapi.models.V2HorizontalPodAutoscaler;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 
@@ -47,7 +50,6 @@ import java.util.List;
 import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static com.microsoft.jenkins.kubernetes.util.Constants.DRY_RUN_ALL;
 import static com.microsoft.jenkins.kubernetes.util.Constants.KUBERNETES_CONTROLLER_UID_FIELD;
 import static com.microsoft.jenkins.kubernetes.util.Constants.KUBERNETES_JOB_NAME_FIELD;
 
@@ -57,6 +59,7 @@ public class V1ResourceManager extends ResourceManager {
     private final AppsV1Api appsV1ApiInstance;
     private final BatchV1Api batchV1ApiInstance;
     private final AutoscalingV1Api autoscalingV1Api;
+    private final AutoscalingV2Api autoscalingV2Api;
     private final NetworkingV1Api networkingV1Api;
     private final RbacAuthorizationV1Api rbacV1Api;
 
@@ -70,6 +73,7 @@ public class V1ResourceManager extends ResourceManager {
         appsV1ApiInstance = new AppsV1Api(client);
         batchV1ApiInstance = new BatchV1Api(client);
         autoscalingV1Api = new AutoscalingV1Api(client);
+        autoscalingV2Api = new AutoscalingV2Api(client);
         networkingV1Api = new NetworkingV1Api(client);
         rbacV1Api = new RbacAuthorizationV1Api(client);
     }
@@ -82,6 +86,7 @@ public class V1ResourceManager extends ResourceManager {
         appsV1ApiInstance = new AppsV1Api(client);
         batchV1ApiInstance = new BatchV1Api(client);
         autoscalingV1Api = new AutoscalingV1Api(client);
+        autoscalingV2Api = new AutoscalingV2Api(client);
         networkingV1Api = new NetworkingV1Api(client);
         rbacV1Api = new RbacAuthorizationV1Api(client);
     }
@@ -91,54 +96,36 @@ public class V1ResourceManager extends ResourceManager {
      * E.g. Nginx => Always   Nginx:1.79 => IfNotPresent
      * This method is used to mask the default value caused by dryRun.
      *
-     * @param origin object in kubernetes cluster
-     * @param yaml   user applied object
-     * @param target dryRun return object
+     * @param origin origin pod spec
+     * @param yaml   yaml pod spec
+     * @param target target pod spec
      */
     private static void recoverPodImagePullPolicy(V1PodSpec origin, V1PodSpec yaml, V1PodSpec target) {
-        if (origin.getInitContainers() != null) {
-            checkNotNull(yaml.getInitContainers());
-            checkNotNull(target.getInitContainers());
-            // should not change size
-            if (origin.getInitContainers().size() != yaml.getInitContainers().size()
-                    || origin.getInitContainers().size() != target.getInitContainers().size()) {
-                return;
-            }
-            for (int i = 0; i < origin.getInitContainers().size(); i++) {
-                if (StringUtils.isBlank(yaml.getInitContainers().get(i).getImagePullPolicy())) {
-                    target.getInitContainers().get(i).imagePullPolicy(
-                            origin.getInitContainers().get(i).getImagePullPolicy());
+        if (origin == null || yaml == null || target == null
+                || yaml.getContainers() == null || target.getContainers() == null) {
+            return;
+        }
+        for (int i = 0; i < yaml.getContainers().size() && i < target.getContainers().size(); i++) {
+            String imagePolicy = target.getContainers().get(i).getImagePullPolicy();
+            if (imagePolicy == null) {
+                String originPolicy = null;
+                if (origin.getContainers() != null && origin.getContainers().size() > i) {
+                    originPolicy = origin.getContainers().get(i).getImagePullPolicy();
                 }
+                target.getContainers().get(i).setImagePullPolicy(originPolicy);
             }
         }
-        if (origin.getContainers() != null) {
-            checkNotNull(yaml.getContainers());
-            checkNotNull(target.getContainers());
-            // should not change size
-            if (origin.getContainers().size() != yaml.getContainers().size()
-                    || origin.getContainers().size() != target.getContainers().size()) {
-                return;
-            }
-            for (int i = 0; i < origin.getContainers().size(); i++) {
-                if (StringUtils.isBlank(yaml.getContainers().get(i).getImagePullPolicy())) {
-                    target.getContainers().get(i).imagePullPolicy(
-                            origin.getContainers().get(i).getImagePullPolicy());
-                }
-            }
-        }
-        return;
-    }
-
-    public V1ResourceUpdateMonitor getResourceUpdateMonitor() {
-        return resourceUpdateMonitor;
     }
 
     public V1ResourceManager withResourceUpdateMonitor(V1ResourceUpdateMonitor monitor) {
         checkNotNull(monitor);
-        this.resourceUpdateMonitor = monitor;
+        resourceUpdateMonitor = monitor;
         return this;
     }
 
+    // ========================================================================
+    // ReplicaSetUpdater
+    // ========================================================================
     class ReplicaSetUpdater extends ResourceUpdater<V1ReplicaSet> {
         ReplicaSetUpdater(V1ReplicaSet rs) {
             super(rs);
@@ -148,8 +135,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ReplicaSet getCurrentResource() {
             V1ReplicaSet replicaSet = null;
             try {
-                replicaSet = appsV1ApiInstance.readNamespacedReplicaSet(getName(), getNamespace(), getPretty(),
-                        true, true);
+                replicaSet = appsV1ApiInstance.readNamespacedReplicaSet(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -160,8 +146,9 @@ public class V1ResourceManager extends ResourceManager {
         V1ReplicaSet applyResource(V1ReplicaSet original, V1ReplicaSet current) {
             V1ReplicaSet replicaSet = null;
             try {
-                replicaSet = appsV1ApiInstance.replaceNamespacedReplicaSet(getName(), getNamespace(), current,
-                        getPretty(), null, null);
+                replicaSet = appsV1ApiInstance
+                        .replaceNamespacedReplicaSet(getName(), getNamespace(), current)
+                        .execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -172,8 +159,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ReplicaSet createResource(V1ReplicaSet current) {
             V1ReplicaSet replicaSet = null;
             try {
-                replicaSet = appsV1ApiInstance.createNamespacedReplicaSet(
-                        getNamespace(), current, getPretty(), null, null);
+                replicaSet = appsV1ApiInstance.createNamespacedReplicaSet(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -184,8 +170,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1ReplicaSet current) {
             V1Status result = null;
             try {
-                result = appsV1ApiInstance.deleteNamespacedReplicaSet(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = appsV1ApiInstance.deleteNamespacedReplicaSet(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -198,6 +183,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // DeploymentUpdater
+    // ========================================================================
     class DeploymentUpdater extends ResourceUpdater<V1Deployment> {
         DeploymentUpdater(V1Deployment deployment) {
             super(deployment);
@@ -207,8 +195,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Deployment getCurrentResource() {
             V1Deployment deployment = null;
             try {
-                deployment = appsV1ApiInstance.readNamespacedDeployment(getName(), getNamespace(), getPretty(),
-                        true, true);
+                deployment = appsV1ApiInstance.readNamespacedDeployment(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -219,8 +206,9 @@ public class V1ResourceManager extends ResourceManager {
         V1Deployment applyResource(V1Deployment original, V1Deployment current) {
             V1Deployment deployment = null;
             try {
-                deployment = appsV1ApiInstance.replaceNamespacedDeployment(getName(), getNamespace(), current,
-                        getPretty(), null, null);
+                deployment = appsV1ApiInstance
+                        .replaceNamespacedDeployment(getName(), getNamespace(), current)
+                        .execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -231,8 +219,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Deployment createResource(V1Deployment current) {
             V1Deployment deployment = null;
             try {
-                deployment = appsV1ApiInstance.createNamespacedDeployment(
-                        getNamespace(), current,  getPretty(), null, null);
+                deployment = appsV1ApiInstance.createNamespacedDeployment(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -243,14 +230,12 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1Deployment current) {
             V1Status result = null;
             try {
-                result = appsV1ApiInstance.deleteNamespacedDeployment(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = appsV1ApiInstance.deleteNamespacedDeployment(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
             return result;
         }
-
 
         @Override
         void notifyUpdate(V1Deployment original, V1Deployment current) {
@@ -258,6 +243,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // DaemonSetUpdater
+    // ========================================================================
     class DaemonSetUpdater extends ResourceUpdater<V1DaemonSet> {
         DaemonSetUpdater(V1DaemonSet ds) {
             super(ds);
@@ -267,8 +255,7 @@ public class V1ResourceManager extends ResourceManager {
         V1DaemonSet getCurrentResource() {
             V1DaemonSet daemonSet = null;
             try {
-                daemonSet = appsV1ApiInstance.readNamespacedDaemonSet(getName(), getNamespace(), getPretty(),
-                        true, true);
+                daemonSet = appsV1ApiInstance.readNamespacedDaemonSet(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -279,8 +266,7 @@ public class V1ResourceManager extends ResourceManager {
         V1DaemonSet applyResource(V1DaemonSet original, V1DaemonSet current) {
             V1DaemonSet daemonSet = null;
             try {
-                daemonSet = appsV1ApiInstance.replaceNamespacedDaemonSet(getName(), getNamespace(), current,
-                        getPretty(), null, null);
+                daemonSet = appsV1ApiInstance.replaceNamespacedDaemonSet(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -291,8 +277,7 @@ public class V1ResourceManager extends ResourceManager {
         V1DaemonSet createResource(V1DaemonSet current) {
             V1DaemonSet daemonSet = null;
             try {
-                daemonSet = appsV1ApiInstance.createNamespacedDaemonSet(
-                        getNamespace(), current, getPretty(), null, null);
+                daemonSet = appsV1ApiInstance.createNamespacedDaemonSet(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -303,8 +288,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1DaemonSet current) {
             V1Status result = null;
             try {
-                result = appsV1ApiInstance.deleteNamespacedDaemonSet(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = appsV1ApiInstance.deleteNamespacedDaemonSet(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -317,6 +301,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // ReplicationControllerUpdater
+    // ========================================================================
     class ReplicationControllerUpdater extends ResourceUpdater<V1ReplicationController> {
         ReplicationControllerUpdater(V1ReplicationController rc) {
             super(rc);
@@ -327,7 +314,7 @@ public class V1ResourceManager extends ResourceManager {
             V1ReplicationController replicationController = null;
             try {
                 replicationController = coreV1ApiInstance.readNamespacedReplicationController(getName(),
-                        getNamespace(), getPretty(), true, true);
+                        getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -339,7 +326,7 @@ public class V1ResourceManager extends ResourceManager {
             V1ReplicationController replicationController = null;
             try {
                 replicationController = coreV1ApiInstance.replaceNamespacedReplicationController(getName(),
-                        getNamespace(), current, getPretty(), null, null);
+                        getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -351,7 +338,7 @@ public class V1ResourceManager extends ResourceManager {
             V1ReplicationController replicationController = null;
             try {
                 replicationController = coreV1ApiInstance.createNamespacedReplicationController(getNamespace(),
-                        current, getPretty(), null, null);
+                        current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -362,8 +349,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1ReplicationController current) {
             V1Status result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedReplicationController(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = coreV1ApiInstance.deleteNamespacedReplicationController(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -376,6 +362,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // ServiceUpdater
+    // ========================================================================
     class ServiceUpdater extends ResourceUpdater<V1Service> {
         ServiceUpdater(V1Service service) {
             super(service);
@@ -385,8 +374,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Service getCurrentResource() {
             V1Service service = null;
             try {
-                service = coreV1ApiInstance.readNamespacedService(getName(), getNamespace(), getPretty(),
-                        true, null);
+                service = coreV1ApiInstance.readNamespacedService(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -443,8 +431,7 @@ public class V1ResourceManager extends ResourceManager {
 
             V1Service service = null;
             try {
-                service = coreV1ApiInstance.replaceNamespacedService(getName(), getNamespace(),
-                        current, getPretty(), null, null);
+                service = coreV1ApiInstance.replaceNamespacedService(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -455,8 +442,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Service createResource(V1Service current) {
             V1Service service = null;
             try {
-                service = coreV1ApiInstance.createNamespacedService(
-                        getNamespace(), current, getPretty(), null, null);
+                service = coreV1ApiInstance.createNamespacedService(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -464,11 +450,10 @@ public class V1ResourceManager extends ResourceManager {
         }
 
         @Override
-        V1Status deleteResource(V1Service current) {
-            V1Status result = null;
+        Object deleteResource(V1Service current) {
+            Object result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedService(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = coreV1ApiInstance.deleteNamespacedService(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -481,6 +466,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // JobUpdater
+    // ========================================================================
     class JobUpdater extends ResourceUpdater<V1Job> {
         JobUpdater(V1Job job) {
             super(job);
@@ -490,7 +478,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Job getCurrentResource() {
             V1Job job = null;
             try {
-                job = batchV1ApiInstance.readNamespacedJob(getName(), getNamespace(), getPretty(), true, true);
+                job = batchV1ApiInstance.readNamespacedJob(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -502,8 +490,7 @@ public class V1ResourceManager extends ResourceManager {
             V1Job job = null;
             V1Job putJob = getPutObject(original, current);
             try {
-                job = batchV1ApiInstance.replaceNamespacedJob(
-                        getName(), getNamespace(), putJob, getPretty(), null, null);
+                job = batchV1ApiInstance.replaceNamespacedJob(getName(), getNamespace(), putJob).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -532,8 +519,8 @@ public class V1ResourceManager extends ResourceManager {
             dryRunReq.getMetadata().setGenerateName(getName());
             dryRunReq.getMetadata().setNamespace(getNamespace());
             try {
-                dryRunRes = batchV1ApiInstance.createNamespacedJob(dryRunReq.getMetadata().getNamespace(),
-                        dryRunReq,  getPretty(), DRY_RUN_ALL, null);
+                dryRunRes = batchV1ApiInstance.createNamespacedJob(
+                        dryRunReq.getMetadata().getNamespace(), dryRunReq).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -573,8 +560,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Job createResource(V1Job current) {
             V1Job job = null;
             try {
-                job = batchV1ApiInstance.createNamespacedJob(
-                        getNamespace(), current, getPretty(), null, null);
+                job = batchV1ApiInstance.createNamespacedJob(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -585,8 +571,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1Job current) {
             V1Status result = null;
             try {
-                result = batchV1ApiInstance.deleteNamespacedJob(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = batchV1ApiInstance.deleteNamespacedJob(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -599,6 +584,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // PodUpdater
+    // ========================================================================
     class PodUpdater extends ResourceUpdater<V1Pod> {
         PodUpdater(V1Pod pod) {
             super(pod);
@@ -608,7 +596,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Pod getCurrentResource() {
             V1Pod pod = null;
             try {
-                pod = coreV1ApiInstance.readNamespacedPod(getName(), getNamespace(), getPretty(), true, true);
+                pod = coreV1ApiInstance.readNamespacedPod(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -620,8 +608,7 @@ public class V1ResourceManager extends ResourceManager {
             V1Pod pod = null;
             V1Pod putPod = getPutObject(original, current);
             try {
-                pod = coreV1ApiInstance.replaceNamespacedPod(
-                        getName(), getNamespace(), putPod, getPretty(), null, null);
+                pod = coreV1ApiInstance.replaceNamespacedPod(getName(), getNamespace(), putPod).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -650,8 +637,8 @@ public class V1ResourceManager extends ResourceManager {
             dryRunReq.getMetadata().setGenerateName(getName());
             dryRunReq.getMetadata().setNamespace(getNamespace());
             try {
-                dryRunRes = coreV1ApiInstance.createNamespacedPod(dryRunReq.getMetadata().getNamespace(),
-                        dryRunReq, getPretty(), DRY_RUN_ALL, null);
+                dryRunRes = coreV1ApiInstance.createNamespacedPod(
+                        dryRunReq.getMetadata().getNamespace(), dryRunReq).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -684,8 +671,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Pod createResource(V1Pod current) {
             V1Pod pod = null;
             try {
-                pod = coreV1ApiInstance.createNamespacedPod(
-                        getNamespace(), current, getPretty(), null, null);
+                pod = coreV1ApiInstance.createNamespacedPod(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -693,11 +679,10 @@ public class V1ResourceManager extends ResourceManager {
         }
 
         @Override
-        V1Status deleteResource(V1Pod current) {
-            V1Status result = null;
+        Object deleteResource(V1Pod current) {
+            Object result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedPod(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = coreV1ApiInstance.deleteNamespacedPod(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -710,6 +695,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // ConfigMapUpdater
+    // ========================================================================
     class ConfigMapUpdater extends ResourceUpdater<V1ConfigMap> {
         ConfigMapUpdater(V1ConfigMap configMap) {
             super(configMap);
@@ -719,8 +707,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ConfigMap getCurrentResource() {
             V1ConfigMap configMap = null;
             try {
-                configMap = coreV1ApiInstance.readNamespacedConfigMap(getName(), getNamespace(),
-                        getPretty(), true, true);
+                configMap = coreV1ApiInstance.readNamespacedConfigMap(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -731,8 +718,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ConfigMap applyResource(V1ConfigMap original, V1ConfigMap current) {
             V1ConfigMap configMap = null;
             try {
-                configMap = coreV1ApiInstance.replaceNamespacedConfigMap(getName(), getNamespace(),
-                        current, getPretty(), null, null);
+                configMap = coreV1ApiInstance.replaceNamespacedConfigMap(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -743,8 +729,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ConfigMap createResource(V1ConfigMap current) {
             V1ConfigMap configMap = null;
             try {
-                configMap = coreV1ApiInstance.createNamespacedConfigMap(
-                        getNamespace(), current, getPretty(), null, null);
+                configMap = coreV1ApiInstance.createNamespacedConfigMap(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -755,8 +740,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1ConfigMap current) {
             V1Status result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedConfigMap(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = coreV1ApiInstance.deleteNamespacedConfigMap(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -769,6 +753,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // SecretUpdater
+    // ========================================================================
     class SecretUpdater extends ResourceUpdater<V1Secret> {
         SecretUpdater(V1Secret secret) {
             super(secret);
@@ -778,8 +765,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Secret getCurrentResource() {
             V1Secret secret = null;
             try {
-                secret = coreV1ApiInstance.readNamespacedSecret(
-                        getName(), getNamespace(), getPretty(), true, true);
+                secret = coreV1ApiInstance.readNamespacedSecret(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -790,8 +776,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Secret applyResource(V1Secret original, V1Secret current) {
             V1Secret secret = null;
             try {
-                secret = coreV1ApiInstance.replaceNamespacedSecret(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                secret = coreV1ApiInstance.replaceNamespacedSecret(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -802,8 +787,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Secret createResource(V1Secret current) {
             V1Secret secret = null;
             try {
-                secret = coreV1ApiInstance.createNamespacedSecret(
-                        getNamespace(), current, getPretty(), null, null);
+                secret = coreV1ApiInstance.createNamespacedSecret(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -814,8 +798,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1Secret current) {
             V1Status result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedSecret(
-                        getName(), getNamespace(), getPretty(), null, null, null, null, null);
+                result = coreV1ApiInstance.deleteNamespacedSecret(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -839,6 +822,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // NamespaceUpdater
+    // ========================================================================
     class NamespaceUpdater extends ResourceUpdater<V1Namespace> {
         NamespaceUpdater(V1Namespace namespace) {
             super(namespace);
@@ -848,7 +834,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Namespace getCurrentResource() {
             V1Namespace result = null;
             try {
-                result = coreV1ApiInstance.readNamespace(getName(), getPretty(), true, true);
+                result = coreV1ApiInstance.readNamespace(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -859,7 +845,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Namespace applyResource(V1Namespace original, V1Namespace current) {
             V1Namespace result = null;
             try {
-                result = coreV1ApiInstance.replaceNamespace(getName(), current, getPretty(), null, null);
+                result = coreV1ApiInstance.replaceNamespace(getName(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -870,7 +856,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Namespace createResource(V1Namespace current) {
             V1Namespace result = null;
             try {
-                result = coreV1ApiInstance.createNamespace(current, getPretty(), null, null);
+                result = coreV1ApiInstance.createNamespace(current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -881,8 +867,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1Namespace current) {
             V1Status result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespace(
-                        getName(), getPretty(), null, null, null, null, null);
+                result = coreV1ApiInstance.deleteNamespace(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -895,6 +880,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // HorizontalPodAutoscalerUpdater (V1)
+    // ========================================================================
     class HorizontalPodAutoscalerUpdater extends ResourceUpdater<V1HorizontalPodAutoscaler> {
         HorizontalPodAutoscalerUpdater(V1HorizontalPodAutoscaler namespace) {
             super(namespace);
@@ -904,8 +892,7 @@ public class V1ResourceManager extends ResourceManager {
         V1HorizontalPodAutoscaler getCurrentResource() {
             V1HorizontalPodAutoscaler result = null;
             try {
-                result = autoscalingV1Api.readNamespacedHorizontalPodAutoscaler(
-                        getName(), getNamespace(), getPretty(), true, true);
+                result = autoscalingV1Api.readNamespacedHorizontalPodAutoscaler(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -917,7 +904,7 @@ public class V1ResourceManager extends ResourceManager {
             V1HorizontalPodAutoscaler result = null;
             try {
                 result = autoscalingV1Api.replaceNamespacedHorizontalPodAutoscaler(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                        getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -928,8 +915,7 @@ public class V1ResourceManager extends ResourceManager {
         V1HorizontalPodAutoscaler createResource(V1HorizontalPodAutoscaler current) {
             V1HorizontalPodAutoscaler result = null;
             try {
-                result = autoscalingV1Api.createNamespacedHorizontalPodAutoscaler(
-                        getNamespace(), current, getPretty(), null, null);
+                result = autoscalingV1Api.createNamespacedHorizontalPodAutoscaler(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -940,9 +926,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1HorizontalPodAutoscaler current) {
             V1Status result = null;
             try {
-                result = autoscalingV1Api.deleteNamespacedHorizontalPodAutoscaler(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = autoscalingV1Api.deleteNamespacedHorizontalPodAutoscaler(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -955,6 +939,68 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // HorizontalPodAutoscalerV2Updater
+    // ========================================================================
+    class HorizontalPodAutoscalerV2Updater extends ResourceUpdater<V2HorizontalPodAutoscaler> {
+        HorizontalPodAutoscalerV2Updater(V2HorizontalPodAutoscaler hpa) {
+            super(hpa);
+        }
+
+        @Override
+        V2HorizontalPodAutoscaler getCurrentResource() {
+            V2HorizontalPodAutoscaler result = null;
+            try {
+                result = autoscalingV2Api.readNamespacedHorizontalPodAutoscaler(getName(), getNamespace()).execute();
+            } catch (ApiException e) {
+                handleApiExceptionExceptNotFound(e);
+            }
+            return result;
+        }
+
+        @Override
+        V2HorizontalPodAutoscaler applyResource(V2HorizontalPodAutoscaler original, V2HorizontalPodAutoscaler current) {
+            V2HorizontalPodAutoscaler result = null;
+            try {
+                result = autoscalingV2Api.replaceNamespacedHorizontalPodAutoscaler(
+                        getName(), getNamespace(), current).execute();
+            } catch (ApiException e) {
+                handleApiException(e);
+            }
+            return result;
+        }
+
+        @Override
+        V2HorizontalPodAutoscaler createResource(V2HorizontalPodAutoscaler current) {
+            V2HorizontalPodAutoscaler result = null;
+            try {
+                result = autoscalingV2Api.createNamespacedHorizontalPodAutoscaler(getNamespace(), current).execute();
+            } catch (ApiException e) {
+                handleApiException(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1Status deleteResource(V2HorizontalPodAutoscaler current) {
+            V1Status result = null;
+            try {
+                result = autoscalingV2Api.deleteNamespacedHorizontalPodAutoscaler(getName(), getNamespace()).execute();
+            } catch (ApiException e) {
+                handleApiExceptionExceptNotFound(e);
+            }
+            return result;
+        }
+
+        @Override
+        void notifyUpdate(V2HorizontalPodAutoscaler original, V2HorizontalPodAutoscaler current) {
+            resourceUpdateMonitor.onHorizontalPodAutoscalerV2Update(original, current);
+        }
+    }
+
+    // ========================================================================
+    // StatefulSetUpdater
+    // ========================================================================
     class StatefulSetUpdater extends ResourceUpdater<V1StatefulSet> {
         StatefulSetUpdater(V1StatefulSet namespace) {
             super(namespace);
@@ -964,8 +1010,7 @@ public class V1ResourceManager extends ResourceManager {
         V1StatefulSet getCurrentResource() {
             V1StatefulSet result = null;
             try {
-                result = appsV1ApiInstance.readNamespacedStatefulSet(
-                        getName(), getNamespace(), getPretty(), true, true);
+                result = appsV1ApiInstance.readNamespacedStatefulSet(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -978,7 +1023,7 @@ public class V1ResourceManager extends ResourceManager {
             try {
                 V1StatefulSet putStatefulSet = getPutObject(original, current);
                 result = appsV1ApiInstance.replaceNamespacedStatefulSet(
-                        getName(), getNamespace(), putStatefulSet, getPretty(), null, null);
+                        getName(), getNamespace(), putStatefulSet).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -989,8 +1034,7 @@ public class V1ResourceManager extends ResourceManager {
         V1StatefulSet createResource(V1StatefulSet current) {
             V1StatefulSet result = null;
             try {
-                result = appsV1ApiInstance.createNamespacedStatefulSet(
-                        getNamespace(), current, getPretty(), null, null);
+                result = appsV1ApiInstance.createNamespacedStatefulSet(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1001,9 +1045,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1StatefulSet current) {
             V1Status result = null;
             try {
-                result = appsV1ApiInstance.deleteNamespacedStatefulSet(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = appsV1ApiInstance.deleteNamespacedStatefulSet(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1032,8 +1074,8 @@ public class V1ResourceManager extends ResourceManager {
             dryRunReq.getMetadata().setGenerateName(getName());
             dryRunReq.getMetadata().setNamespace(getNamespace());
             try {
-                dryRunRes = appsV1ApiInstance.createNamespacedStatefulSet(dryRunReq.getMetadata().getNamespace(),
-                        dryRunReq, getPretty(), DRY_RUN_ALL, null);
+                dryRunRes = appsV1ApiInstance.createNamespacedStatefulSet(
+                        dryRunReq.getMetadata().getNamespace(), dryRunReq).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1048,7 +1090,6 @@ public class V1ResourceManager extends ResourceManager {
                     ownerReferences(original.getMetadata().getOwnerReferences()).
                     generateName(null);
 
-
             V1ResourceManager.recoverPodImagePullPolicy(
                     original.getSpec().getTemplate().getSpec(),
                     current.getSpec().getTemplate().getSpec(),
@@ -1057,13 +1098,15 @@ public class V1ResourceManager extends ResourceManager {
             return dryRunRes;
         }
 
-
         @Override
         void notifyUpdate(V1StatefulSet original, V1StatefulSet current) {
             resourceUpdateMonitor.onStatefulSetUpdate(original, current);
         }
     }
 
+    // ========================================================================
+    // PersistentVolumeClaimUpdater
+    // ========================================================================
     class PersistentVolumeClaimUpdater extends ResourceUpdater<V1PersistentVolumeClaim> {
         PersistentVolumeClaimUpdater(V1PersistentVolumeClaim namespace) {
             super(namespace);
@@ -1073,8 +1116,7 @@ public class V1ResourceManager extends ResourceManager {
         V1PersistentVolumeClaim getCurrentResource() {
             V1PersistentVolumeClaim result = null;
             try {
-                result = coreV1ApiInstance.readNamespacedPersistentVolumeClaim(
-                        getName(), getNamespace(), getPretty(), true, true);
+                result = coreV1ApiInstance.readNamespacedPersistentVolumeClaim(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1083,7 +1125,6 @@ public class V1ResourceManager extends ResourceManager {
 
         @Override
         V1PersistentVolumeClaim applyResource(V1PersistentVolumeClaim original, V1PersistentVolumeClaim current) {
-
 
             // The kubernetes-client library will compare the server config and the current applied config,
             // and compute the difference, which will be sent to the PATCH API of Kubernetes. The missing field
@@ -1108,7 +1149,7 @@ public class V1ResourceManager extends ResourceManager {
             V1PersistentVolumeClaim result = null;
             try {
                 result = coreV1ApiInstance.replaceNamespacedPersistentVolumeClaim(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                        getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1119,8 +1160,7 @@ public class V1ResourceManager extends ResourceManager {
         V1PersistentVolumeClaim createResource(V1PersistentVolumeClaim current) {
             V1PersistentVolumeClaim result = null;
             try {
-                result = coreV1ApiInstance.createNamespacedPersistentVolumeClaim(
-                        getNamespace(), current, getPretty(), null, null);
+                result = coreV1ApiInstance.createNamespacedPersistentVolumeClaim(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1128,12 +1168,10 @@ public class V1ResourceManager extends ResourceManager {
         }
 
         @Override
-        V1Status deleteResource(V1PersistentVolumeClaim current) {
-            V1Status result = null;
+        Object deleteResource(V1PersistentVolumeClaim current) {
+            Object result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedPersistentVolumeClaim(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = coreV1ApiInstance.deleteNamespacedPersistentVolumeClaim(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1146,6 +1184,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // PersistentVolumeUpdater
+    // ========================================================================
     class PersistentVolumeUpdater extends ResourceUpdater<V1PersistentVolume> {
         PersistentVolumeUpdater(V1PersistentVolume persistentVolume) {
             super(persistentVolume);
@@ -1155,8 +1196,7 @@ public class V1ResourceManager extends ResourceManager {
         V1PersistentVolume getCurrentResource() {
             V1PersistentVolume result = null;
             try {
-                result = coreV1ApiInstance.readPersistentVolume(
-                        getName(), getPretty(), true, true);
+                result = coreV1ApiInstance.readPersistentVolume(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1167,8 +1207,7 @@ public class V1ResourceManager extends ResourceManager {
         V1PersistentVolume applyResource(V1PersistentVolume original, V1PersistentVolume current) {
             V1PersistentVolume result = null;
             try {
-                result = coreV1ApiInstance.replacePersistentVolume(
-                        getName(), current, getPretty(), null, null);
+                result = coreV1ApiInstance.replacePersistentVolume(getName(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1179,8 +1218,7 @@ public class V1ResourceManager extends ResourceManager {
         V1PersistentVolume createResource(V1PersistentVolume current) {
             V1PersistentVolume result = null;
             try {
-                result = coreV1ApiInstance.createPersistentVolume(
-                        current, getPretty(), null, null);
+                result = coreV1ApiInstance.createPersistentVolume(current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1188,12 +1226,10 @@ public class V1ResourceManager extends ResourceManager {
         }
 
         @Override
-        V1Status deleteResource(V1PersistentVolume current) {
-            V1Status result = null;
+        Object deleteResource(V1PersistentVolume current) {
+            Object result = null;
             try {
-                result = coreV1ApiInstance.deletePersistentVolume(
-                        getName(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = coreV1ApiInstance.deletePersistentVolume(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1206,6 +1242,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // NetworkPolicyUpdater
+    // ========================================================================
     class NetworkPolicyUpdater extends ResourceUpdater<V1NetworkPolicy> {
         NetworkPolicyUpdater(V1NetworkPolicy networkPolicy) {
             super(networkPolicy);
@@ -1215,8 +1254,7 @@ public class V1ResourceManager extends ResourceManager {
         V1NetworkPolicy getCurrentResource() {
             V1NetworkPolicy result = null;
             try {
-                result = networkingV1Api.readNamespacedNetworkPolicy(
-                        getName(), getNamespace(), getPretty(), true, true);
+                result = networkingV1Api.readNamespacedNetworkPolicy(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1227,8 +1265,7 @@ public class V1ResourceManager extends ResourceManager {
         V1NetworkPolicy applyResource(V1NetworkPolicy original, V1NetworkPolicy current) {
             V1NetworkPolicy result = null;
             try {
-                result = networkingV1Api.replaceNamespacedNetworkPolicy(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                result = networkingV1Api.replaceNamespacedNetworkPolicy(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1239,8 +1276,7 @@ public class V1ResourceManager extends ResourceManager {
         V1NetworkPolicy createResource(V1NetworkPolicy current) {
             V1NetworkPolicy result = null;
             try {
-                result = networkingV1Api.createNamespacedNetworkPolicy(
-                        getNamespace(), current, getPretty(), null, null);
+                result = networkingV1Api.createNamespacedNetworkPolicy(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1251,9 +1287,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1NetworkPolicy current) {
             V1Status result = null;
             try {
-                result = networkingV1Api.deleteNamespacedNetworkPolicy(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = networkingV1Api.deleteNamespacedNetworkPolicy(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1266,6 +1300,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // RoleUpdater
+    // ========================================================================
     class RoleUpdater extends ResourceUpdater<V1Role> {
         RoleUpdater(V1Role role) {
             super(role);
@@ -1275,8 +1312,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Role getCurrentResource() {
             V1Role result = null;
             try {
-                result = rbacV1Api.readNamespacedRole(
-                        getName(), getNamespace(), getPretty());
+                result = rbacV1Api.readNamespacedRole(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1287,8 +1323,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Role applyResource(V1Role original, V1Role current) {
             V1Role result = null;
             try {
-                result = rbacV1Api.replaceNamespacedRole(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                result = rbacV1Api.replaceNamespacedRole(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1299,8 +1334,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Role createResource(V1Role current) {
             V1Role result = null;
             try {
-                result = rbacV1Api.createNamespacedRole(
-                        getNamespace(), current, getPretty(), null, null);
+                result = rbacV1Api.createNamespacedRole(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1311,9 +1345,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1Role current) {
             V1Status result = null;
             try {
-                result = rbacV1Api.deleteNamespacedRole(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = rbacV1Api.deleteNamespacedRole(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1326,6 +1358,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // RoleBindingUpdater
+    // ========================================================================
     class RoleBindingUpdater extends ResourceUpdater<V1RoleBinding> {
         RoleBindingUpdater(V1RoleBinding roleBinding) {
             super(roleBinding);
@@ -1335,8 +1370,7 @@ public class V1ResourceManager extends ResourceManager {
         V1RoleBinding getCurrentResource() {
             V1RoleBinding result = null;
             try {
-                result = rbacV1Api.readNamespacedRoleBinding(
-                        getName(), getNamespace(), getPretty());
+                result = rbacV1Api.readNamespacedRoleBinding(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1347,8 +1381,7 @@ public class V1ResourceManager extends ResourceManager {
         V1RoleBinding applyResource(V1RoleBinding original, V1RoleBinding current) {
             V1RoleBinding result = null;
             try {
-                result = rbacV1Api.replaceNamespacedRoleBinding(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                result = rbacV1Api.replaceNamespacedRoleBinding(getName(), getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1359,8 +1392,7 @@ public class V1ResourceManager extends ResourceManager {
         V1RoleBinding createResource(V1RoleBinding current) {
             V1RoleBinding result = null;
             try {
-                result = rbacV1Api.createNamespacedRoleBinding(
-                        getNamespace(), current, getPretty(), null, null);
+                result = rbacV1Api.createNamespacedRoleBinding(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1371,9 +1403,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1RoleBinding current) {
             V1Status result = null;
             try {
-                result = rbacV1Api.deleteNamespacedRoleBinding(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = rbacV1Api.deleteNamespacedRoleBinding(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1386,6 +1416,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // ServiceAccountUpdater
+    // ========================================================================
     class ServiceAccountUpdater extends ResourceUpdater<V1ServiceAccount> {
         ServiceAccountUpdater(V1ServiceAccount serviceAccount) {
             super(serviceAccount);
@@ -1395,8 +1428,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ServiceAccount getCurrentResource() {
             V1ServiceAccount result = null;
             try {
-                result = coreV1ApiInstance.readNamespacedServiceAccount(
-                        getName(), getNamespace(), getPretty(), true, true);
+                result = coreV1ApiInstance.readNamespacedServiceAccount(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1407,8 +1439,9 @@ public class V1ResourceManager extends ResourceManager {
         V1ServiceAccount applyResource(V1ServiceAccount original, V1ServiceAccount current) {
             V1ServiceAccount result = null;
             try {
-                result = coreV1ApiInstance.replaceNamespacedServiceAccount(
-                        getName(), getNamespace(), current, getPretty(), null, null);
+                result = coreV1ApiInstance
+                        .replaceNamespacedServiceAccount(getName(), getNamespace(), current)
+                        .execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1419,8 +1452,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ServiceAccount createResource(V1ServiceAccount current) {
             V1ServiceAccount result = null;
             try {
-                result = coreV1ApiInstance.createNamespacedServiceAccount(
-                        getNamespace(), current, getPretty(), null, null);
+                result = coreV1ApiInstance.createNamespacedServiceAccount(getNamespace(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1428,12 +1460,10 @@ public class V1ResourceManager extends ResourceManager {
         }
 
         @Override
-        V1Status deleteResource(V1ServiceAccount current) {
-            V1Status result = null;
+        Object deleteResource(V1ServiceAccount current) {
+            Object result = null;
             try {
-                result = coreV1ApiInstance.deleteNamespacedServiceAccount(
-                        getName(), getNamespace(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = coreV1ApiInstance.deleteNamespacedServiceAccount(getName(), getNamespace()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1446,6 +1476,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // ClusterRoleUpdater
+    // ========================================================================
     class ClusterRoleUpdater extends ResourceUpdater<V1ClusterRole> {
         ClusterRoleUpdater(V1ClusterRole clusterRole) {
             super(clusterRole);
@@ -1455,8 +1488,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ClusterRole getCurrentResource() {
             V1ClusterRole result = null;
             try {
-                result = rbacV1Api.readClusterRole(
-                        getName(), getPretty());
+                result = rbacV1Api.readClusterRole(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1467,8 +1499,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ClusterRole applyResource(V1ClusterRole original, V1ClusterRole current) {
             V1ClusterRole result = null;
             try {
-                result = rbacV1Api.replaceClusterRole(
-                        getName(), current, getPretty(), null, null);
+                result = rbacV1Api.replaceClusterRole(getName(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1479,8 +1510,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ClusterRole createResource(V1ClusterRole current) {
             V1ClusterRole result = null;
             try {
-                result = rbacV1Api.createClusterRole(
-                         current, getPretty(), null, null);
+                result = rbacV1Api.createClusterRole(current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1491,9 +1521,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1ClusterRole current) {
             V1Status result = null;
             try {
-                result = rbacV1Api.deleteClusterRole(
-                        getName(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = rbacV1Api.deleteClusterRole(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1506,6 +1534,9 @@ public class V1ResourceManager extends ResourceManager {
         }
     }
 
+    // ========================================================================
+    // ClusterRoleBindingUpdater
+    // ========================================================================
     class ClusterRoleBindingUpdater extends ResourceUpdater<V1ClusterRoleBinding> {
         ClusterRoleBindingUpdater(V1ClusterRoleBinding clusterRoleBinding) {
             super(clusterRoleBinding);
@@ -1515,8 +1546,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ClusterRoleBinding getCurrentResource() {
             V1ClusterRoleBinding result = null;
             try {
-                result = rbacV1Api.readClusterRoleBinding(
-                        getName(), getPretty());
+                result = rbacV1Api.readClusterRoleBinding(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1527,8 +1557,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ClusterRoleBinding applyResource(V1ClusterRoleBinding original, V1ClusterRoleBinding current) {
             V1ClusterRoleBinding result = null;
             try {
-                result = rbacV1Api.replaceClusterRoleBinding(
-                        getName(), current, getPretty(), null, null);
+                result = rbacV1Api.replaceClusterRoleBinding(getName(), current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1539,8 +1568,7 @@ public class V1ResourceManager extends ResourceManager {
         V1ClusterRoleBinding createResource(V1ClusterRoleBinding current) {
             V1ClusterRoleBinding result = null;
             try {
-                result = rbacV1Api.createClusterRoleBinding(
-                         current, getPretty(), null, null);
+                result = rbacV1Api.createClusterRoleBinding(current).execute();
             } catch (ApiException e) {
                 handleApiException(e);
             }
@@ -1551,9 +1579,7 @@ public class V1ResourceManager extends ResourceManager {
         V1Status deleteResource(V1ClusterRoleBinding current) {
             V1Status result = null;
             try {
-                result = rbacV1Api.deleteClusterRoleBinding(
-                        getName(), getPretty(),
-                        null, null, null, null, Constants.BACKGROUND_DELETEION);
+                result = rbacV1Api.deleteClusterRoleBinding(getName()).execute();
             } catch (ApiException e) {
                 handleApiExceptionExceptNotFound(e);
             }
@@ -1563,6 +1589,122 @@ public class V1ResourceManager extends ResourceManager {
         @Override
         void notifyUpdate(V1ClusterRoleBinding original, V1ClusterRoleBinding current) {
             resourceUpdateMonitor.onClusterRoleBindingUpdate(original, current);
+        }
+    }
+
+    // ========================================================================
+    // IngressUpdater
+    // ========================================================================
+    class IngressUpdater extends ResourceUpdater<V1Ingress> {
+        IngressUpdater(V1Ingress ingress) {
+            super(ingress);
+        }
+
+        @Override
+        V1Ingress getCurrentResource() {
+            V1Ingress result = null;
+            try {
+                result = networkingV1Api.readNamespacedIngress(getName(), getNamespace()).execute();
+            } catch (ApiException e) {
+                handleApiExceptionExceptNotFound(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1Ingress applyResource(V1Ingress original, V1Ingress current) {
+            V1Ingress result = null;
+            try {
+                result = networkingV1Api.replaceNamespacedIngress(getName(), getNamespace(), current).execute();
+            } catch (ApiException e) {
+                handleApiException(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1Ingress createResource(V1Ingress current) {
+            V1Ingress result = null;
+            try {
+                result = networkingV1Api.createNamespacedIngress(getNamespace(), current).execute();
+            } catch (ApiException e) {
+                handleApiException(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1Status deleteResource(V1Ingress current) {
+            V1Status result = null;
+            try {
+                result = networkingV1Api.deleteNamespacedIngress(getName(), getNamespace()).execute();
+            } catch (ApiException e) {
+                handleApiExceptionExceptNotFound(e);
+            }
+            return result;
+        }
+
+        @Override
+        void notifyUpdate(V1Ingress original, V1Ingress current) {
+            resourceUpdateMonitor.onIngressUpdate(original, current);
+        }
+    }
+
+    // ========================================================================
+    // CronJobUpdater
+    // ========================================================================
+    class CronJobUpdater extends ResourceUpdater<V1CronJob> {
+        CronJobUpdater(V1CronJob cronJob) {
+            super(cronJob);
+        }
+
+        @Override
+        V1CronJob getCurrentResource() {
+            V1CronJob result = null;
+            try {
+                result = batchV1ApiInstance.readNamespacedCronJob(getName(), getNamespace()).execute();
+            } catch (ApiException e) {
+                handleApiExceptionExceptNotFound(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1CronJob applyResource(V1CronJob original, V1CronJob current) {
+            V1CronJob result = null;
+            try {
+                result = batchV1ApiInstance.replaceNamespacedCronJob(getName(), getNamespace(), current).execute();
+            } catch (ApiException e) {
+                handleApiException(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1CronJob createResource(V1CronJob current) {
+            V1CronJob result = null;
+            try {
+                result = batchV1ApiInstance.createNamespacedCronJob(getNamespace(), current).execute();
+            } catch (ApiException e) {
+                handleApiException(e);
+            }
+            return result;
+        }
+
+        @Override
+        V1Status deleteResource(V1CronJob current) {
+            V1Status result = null;
+            try {
+                result = batchV1ApiInstance.deleteNamespacedCronJob(getName(), getNamespace()).execute();
+            } catch (ApiException e) {
+                handleApiExceptionExceptNotFound(e);
+            }
+            return result;
+        }
+
+        @Override
+        void notifyUpdate(V1CronJob original, V1CronJob current) {
+            resourceUpdateMonitor.onCronJobUpdate(original, current);
         }
     }
 }

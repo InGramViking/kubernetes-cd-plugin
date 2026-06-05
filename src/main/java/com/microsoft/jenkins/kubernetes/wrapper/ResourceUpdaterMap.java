@@ -1,14 +1,13 @@
 package com.microsoft.jenkins.kubernetes.wrapper;
 
-import io.kubernetes.client.openapi.models.AppsV1beta1Deployment;
-import io.kubernetes.client.openapi.models.ExtensionsV1beta1Deployment;
-import io.kubernetes.client.openapi.models.NetworkingV1beta1Ingress;
 import io.kubernetes.client.openapi.models.V1ClusterRole;
 import io.kubernetes.client.openapi.models.V1ClusterRoleBinding;
 import io.kubernetes.client.openapi.models.V1ConfigMap;
+import io.kubernetes.client.openapi.models.V1CronJob;
 import io.kubernetes.client.openapi.models.V1DaemonSet;
 import io.kubernetes.client.openapi.models.V1Deployment;
 import io.kubernetes.client.openapi.models.V1HorizontalPodAutoscaler;
+import io.kubernetes.client.openapi.models.V1Ingress;
 import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1Namespace;
 import io.kubernetes.client.openapi.models.V1NetworkPolicy;
@@ -23,18 +22,7 @@ import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1Service;
 import io.kubernetes.client.openapi.models.V1ServiceAccount;
 import io.kubernetes.client.openapi.models.V1StatefulSet;
-import io.kubernetes.client.openapi.models.V1beta1CronJob;
-import io.kubernetes.client.openapi.models.V1beta1DaemonSet;
-import io.kubernetes.client.openapi.models.ExtensionsV1beta1Ingress;
-import io.kubernetes.client.openapi.models.V1beta1ReplicaSet;
-import io.kubernetes.client.openapi.models.V1beta1StatefulSet;
-import io.kubernetes.client.openapi.models.V1beta2DaemonSet;
-import io.kubernetes.client.openapi.models.V1beta2Deployment;
-import io.kubernetes.client.openapi.models.V1beta2ReplicaSet;
-import io.kubernetes.client.openapi.models.V1beta2StatefulSet;
-import io.kubernetes.client.openapi.models.V2alpha1CronJob;
-import io.kubernetes.client.openapi.models.V2beta1HorizontalPodAutoscaler;
-import io.kubernetes.client.openapi.models.V2beta2HorizontalPodAutoscaler;
+import io.kubernetes.client.openapi.models.V2HorizontalPodAutoscaler;
 import org.apache.commons.lang3.tuple.Pair;
 
 import java.util.Collections;
@@ -65,6 +53,8 @@ public final class ResourceUpdaterMap extends HashMap<Class<?>,
                 Pair.of(V1ResourceManager.class, V1ResourceManager.PodUpdater.class));
         put(V1HorizontalPodAutoscaler.class,
                 Pair.of(V1ResourceManager.class, V1ResourceManager.HorizontalPodAutoscalerUpdater.class));
+        put(V2HorizontalPodAutoscaler.class,
+                Pair.of(V1ResourceManager.class, V1ResourceManager.HorizontalPodAutoscalerV2Updater.class));
         put(V1Secret.class,
                 Pair.of(V1ResourceManager.class, V1ResourceManager.SecretUpdater.class));
         put(V1ConfigMap.class,
@@ -90,48 +80,11 @@ public final class ResourceUpdaterMap extends HashMap<Class<?>,
         put(V1ClusterRoleBinding.class,
                 Pair.of(V1ResourceManager.class, V1ResourceManager.ClusterRoleBindingUpdater.class));
 
-
-
-        put(ExtensionsV1beta1Ingress.class,
-                Pair.of(V1beta1ResourceManager.class, V1beta1ResourceManager.ExtensionsIngressUpdater.class));
-        put(NetworkingV1beta1Ingress.class,
-                Pair.of(V1beta1ResourceManager.class, V1beta1ResourceManager.NetworkingIngressUpdater.class));
-        put(V1beta1DaemonSet.class,
-                Pair.of(V1beta1ResourceManager.class, V1beta1ResourceManager.DaemonSetUpdater.class));
-        put(V1beta1ReplicaSet.class,
-                Pair.of(V1beta1ResourceManager.class, V1beta1ResourceManager.ReplicaSetUpdater.class));
-        put(V1beta1StatefulSet.class,
-                Pair.of(V1beta1ResourceManager.class, V1beta1ResourceManager.StatefulSetUpdater.class));
-        put(V1beta1CronJob.class,
-                Pair.of(V1beta1ResourceManager.class, V1beta1ResourceManager.CronJobUpdater.class));
-        put(ExtensionsV1beta1Deployment.class,
-                Pair.of(V1beta1ResourceManager.class,
-                        V1beta1ResourceManager.ExtensionsDeploymentUpdater.class));
-        put(AppsV1beta1Deployment.class,
-                Pair.of(V1beta1ResourceManager.class,
-                        V1beta1ResourceManager.AppsDeploymentUpdater.class));
-
-        put(V1beta2Deployment.class,
-                Pair.of(V1beta2ResourceManager.class,
-                        V1beta2ResourceManager.DeploymentUpdater.class));
-        put(V1beta2DaemonSet.class,
-                Pair.of(V1beta2ResourceManager.class,
-                        V1beta2ResourceManager.DaemonSetUpdater.class));
-        put(V1beta2ReplicaSet.class,
-                Pair.of(V1beta2ResourceManager.class,
-                        V1beta2ResourceManager.ReplicaSetUpdater.class));
-        put(V1beta2StatefulSet.class,
-                Pair.of(V1beta2ResourceManager.class,
-                        V1beta2ResourceManager.StatefulSetUpdater.class));
-
-        put(V2beta1HorizontalPodAutoscaler.class,
-                Pair.of(V2beta1ResourceManager.class, V2beta1ResourceManager.HorizontalPodAutoscalerUpdater.class));
-
-        put(V2beta2HorizontalPodAutoscaler.class,
-                Pair.of(V2beta2ResourceManager.class, V2beta2ResourceManager.HorizontalPodAutoscalerUpdater.class));
-
-        put(V2alpha1CronJob.class,
-                Pair.of(V2alpha1ResourceManager.class, V2alpha1ResourceManager.CronJobUpdater.class));
+        // V1 stable API replacements for previously deprecated beta APIs
+        put(V1Ingress.class,
+                Pair.of(V1ResourceManager.class, V1ResourceManager.IngressUpdater.class));
+        put(V1CronJob.class,
+                Pair.of(V1ResourceManager.class, V1ResourceManager.CronJobUpdater.class));
     }
 
     public static Map<Class<?>, Pair<Class<? extends ResourceManager>,

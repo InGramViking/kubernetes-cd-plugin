@@ -7,13 +7,8 @@
 package com.microsoft.jenkins.kubernetes.command;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.microsoft.jenkins.azurecommons.JobContext;
-import com.microsoft.jenkins.azurecommons.command.CommandState;
-import com.microsoft.jenkins.azurecommons.command.IBaseCommandData;
-import com.microsoft.jenkins.azurecommons.command.ICommand;
-import com.microsoft.jenkins.azurecommons.core.EnvironmentInjector;
-import com.microsoft.jenkins.azurecommons.telemetry.AppInsightsUtils;
 import com.microsoft.jenkins.kubernetes.KubernetesCDPlugin;
+import com.microsoft.jenkins.kubernetes.KubernetesDeployContext;
 import com.microsoft.jenkins.kubernetes.Messages;
 import com.microsoft.jenkins.kubernetes.credentials.ClientWrapperFactory;
 import com.microsoft.jenkins.kubernetes.credentials.ResolvedDockerRegistryEndpoint;
@@ -42,42 +37,55 @@ import static com.google.common.base.Preconditions.checkState;
  * <p>
  * Mark it as serializable so that the inner Callable can be serialized correctly.
  */
-public class DeploymentCommand implements ICommand<DeploymentCommand.IDeploymentCommand>, Serializable {
+public final class DeploymentCommand implements Serializable {
 
-    @Override
-    public void execute(IDeploymentCommand context) {
-        JobContext jobContext = context.getJobContext();
-        FilePath workspace = jobContext.getWorkspace();
+    private DeploymentCommand() {
+        // utility class, hide constructor
+    }
+
+    public enum CommandState {
+        Unknown,
+        InProgress,
+        Success,
+        HasError;
+
+        public boolean isError() {
+            return this == HasError || this == Unknown;
+        }
+    }
+
+    public static void execute(KubernetesDeployContext context) {
+        FilePath workspace = context.getWorkspace();
         EnvVars envVars = context.getEnvVars();
 
         TaskResult taskResult = null;
         try {
             DeploymentTask task = new DeploymentTask();
             task.setWorkspace(workspace);
-            task.setTaskListener(jobContext.getTaskListener());
-            task.setClientFactory(context.clientFactory(context.getJobContext().getRun().getParent()));
+            task.setTaskListener(context.getTaskListener());
+            task.setClientFactory(context.clientFactory(context.getRun().getParent()));
             task.setEnvVars(envVars);
             task.setConfigPaths(context.getConfigs());
             task.setSecretNamespace(context.getSecretNamespace());
             task.setSecretNameCfg(context.getSecretName());
-            task.setDefaultSecretNameSeed(jobContext.getRun().getDisplayName());
+            task.setDefaultSecretNameSeed(context.getRun().getDisplayName());
             task.setEnableSubstitution(context.isEnableConfigSubstitution());
-            task.setDockerRegistryEndpoints(context.resolveEndpoints(jobContext.getRun().getParent()));
+            task.setDockerRegistryEndpoints(context.resolveEndpoints(context.getRun().getParent()));
             task.setDeleteResource(context.isDeleteResource());
 
             taskResult = workspace.act(task);
 
             for (Map.Entry<String, String> entry : taskResult.extraEnvVars.entrySet()) {
-                EnvironmentInjector.inject(jobContext.getRun(), envVars, entry.getKey(), entry.getValue());
+                envVars.put(entry.getKey(), entry.getValue());
             }
 
             context.setCommandState(taskResult.commandState);
             if (taskResult.commandState.isError()) {
                 KubernetesCDPlugin.sendEvent(Constants.AI_KUBERNETES, "DeployFailed",
-                        Constants.AI_K8S_MASTER, AppInsightsUtils.hash(taskResult.masterHost));
+                        Constants.AI_K8S_MASTER, String.valueOf(taskResult.masterHost));
             } else {
                 KubernetesCDPlugin.sendEvent(Constants.AI_KUBERNETES, "Deployed",
-                        Constants.AI_K8S_MASTER, AppInsightsUtils.hash(taskResult.masterHost));
+                        Constants.AI_K8S_MASTER, String.valueOf(taskResult.masterHost));
             }
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
@@ -85,7 +93,8 @@ public class DeploymentCommand implements ICommand<DeploymentCommand.IDeployment
             }
             context.logError(e);
             KubernetesCDPlugin.sendEvent(Constants.AI_KUBERNETES, "DeployFailed",
-                    Constants.AI_K8S_MASTER, AppInsightsUtils.hash(taskResult == null ? null : taskResult.masterHost));
+                    Constants.AI_K8S_MASTER,
+                    taskResult == null ? null : String.valueOf(taskResult.masterHost));
         }
     }
 
@@ -229,7 +238,11 @@ public class DeploymentCommand implements ICommand<DeploymentCommand.IDeployment
         private final Map<String, String> extraEnvVars = new HashMap<>();
     }
 
-    public interface IDeploymentCommand extends IBaseCommandData {
+    /**
+     * Interface for deployment command data.
+     * Provides methods to access deployment configuration.
+     */
+    public interface IDeploymentCommand {
         ClientWrapperFactory clientFactory(Item owner);
 
         String getSecretNamespace();
@@ -243,5 +256,11 @@ public class DeploymentCommand implements ICommand<DeploymentCommand.IDeployment
         boolean isEnableConfigSubstitution();
 
         boolean isDeleteResource();
+
+        EnvVars getEnvVars();
+
+        void setCommandState(CommandState state);
+
+        void logError(Exception e);
     }
 }

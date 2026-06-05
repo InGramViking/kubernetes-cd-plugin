@@ -9,9 +9,11 @@ package com.microsoft.jenkins.kubernetes.wrapper;
 import io.kubernetes.client.openapi.models.V1ClusterRole;
 import io.kubernetes.client.openapi.models.V1ClusterRoleBinding;
 import io.kubernetes.client.openapi.models.V1ConfigMap;
+import io.kubernetes.client.openapi.models.V1CronJob;
 import io.kubernetes.client.openapi.models.V1DaemonSet;
 import io.kubernetes.client.openapi.models.V1Deployment;
 import io.kubernetes.client.openapi.models.V1HorizontalPodAutoscaler;
+import io.kubernetes.client.openapi.models.V1Ingress;
 import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1Namespace;
 import io.kubernetes.client.openapi.models.V1NetworkPolicy;
@@ -26,6 +28,7 @@ import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1Service;
 import io.kubernetes.client.openapi.models.V1ServiceAccount;
 import io.kubernetes.client.openapi.models.V1StatefulSet;
+import io.kubernetes.client.openapi.models.V2HorizontalPodAutoscaler;
 
 public interface V1ResourceUpdateMonitor {
     V1ResourceUpdateMonitor NOOP = new Adapter();
@@ -52,6 +55,8 @@ public interface V1ResourceUpdateMonitor {
 
     void onHorizontalPodAutoscalerUpdate(V1HorizontalPodAutoscaler original, V1HorizontalPodAutoscaler current);
 
+    void onHorizontalPodAutoscalerV2Update(V2HorizontalPodAutoscaler original, V2HorizontalPodAutoscaler current);
+
     void onPersistentVolumeClaimUpdate(V1PersistentVolumeClaim original, V1PersistentVolumeClaim current);
 
     void onPersistentVolumeUpdate(V1PersistentVolume original, V1PersistentVolume current);
@@ -69,6 +74,10 @@ public interface V1ResourceUpdateMonitor {
     void onClusterRoleUpdate(V1ClusterRole original, V1ClusterRole current);
 
     void onClusterRoleBindingUpdate(V1ClusterRoleBinding original, V1ClusterRoleBinding current);
+
+    void onIngressUpdate(V1Ingress original, V1Ingress current);
+
+    void onCronJobUpdate(V1CronJob original, V1CronJob current);
 
 
     class Adapter implements V1ResourceUpdateMonitor {
@@ -119,6 +128,11 @@ public interface V1ResourceUpdateMonitor {
         }
 
         @Override
+        public void onHorizontalPodAutoscalerV2Update(
+                V2HorizontalPodAutoscaler original, V2HorizontalPodAutoscaler current) {
+        }
+
+        @Override
         public void onStatefulSetUpdate(V1StatefulSet original, V1StatefulSet current) {
         }
 
@@ -151,6 +165,14 @@ public interface V1ResourceUpdateMonitor {
 
         @Override
         public void onClusterRoleBindingUpdate(V1ClusterRoleBinding original, V1ClusterRoleBinding current) {
+        }
+
+        @Override
+        public void onIngressUpdate(V1Ingress original, V1Ingress current) {
+        }
+
+        @Override
+        public void onCronJobUpdate(V1CronJob original, V1CronJob current) {
         }
 
     }
