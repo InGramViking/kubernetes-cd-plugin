@@ -25,9 +25,9 @@
         <ssh-credentials.version>1.13</ssh-credentials.version>
         <workflow-step-api.version>2.10</workflow-step-api.version>
 
-        <kubernetes-client.version>22.0.0</kubernetes-client.version>
-        <kotlin-stdlib.version>1.9.10</kotlin-stdlib.version>
-        <error-prone.version>2.27.0</error-prone.version>
+        <kubernetes-client.version>26.0.0</kubernetes-client.version>
+        <kotlin-stdlib.version>2.2.21</kotlin-stdlib.version>
+        <error-prone.version>2.41.0</error-prone.version>
     </properties>
 
     <name>Kubernetes Continuous Deploy Plugin</name>
@@ -48,13 +48,6 @@
             <email>xuzhang3@microsoft.com</email>
         </developer>
     </developers>
-
-    <scm>
-        <connection>scm:git:git://github.com/jenkinsci/${project.artifactId}-plugin.git</connection>
-        <developerConnection>scm:git:git@github.com:jenkinsci/${project.artifactId}-plugin.git</developerConnection>
-        <url>https://github.com/jenkinsci/${project.artifactId}-plugin</url>
-        <tag>${scmTag}</tag>
-    </scm>
 
     <repositories>
         <repository>
