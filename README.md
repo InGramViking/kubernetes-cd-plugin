@@ -1,8 +1,9 @@
 # Kubernetes Continuous Deploy Plugin
 
-## Distribution suspended
-
-Distribution of the Kubernetes continuous deploy plugin was [suspended 23 Aug 2022](https://github.com/jenkins-infra/update-center2/commit/98872a13a5695ffa34e2dd9d4da025d5090dc0ec) due to unresolved remote code execution vulnerability [SECURITY-2448](https://www.jenkins.io/security/advisory/2022-08-23/#SECURITY-2448).  Distribution of the plugin will not resume until the plugin is adopted and the vulnerability is resolved.
+> **Note**: This is a community-maintained fork by [@InGramViking](https://github.com/InGramViking).
+> Repository: [github.com/InGramViking/kubernetes-cd-plugin](https://github.com/InGramViking/kubernetes-cd-plugin)
+> The original plugin distribution was [suspended](https://www.jenkins.io/security/advisory/2022-08-23/#SECURITY-2448) due to a remote code execution vulnerability (CVE-2021-25738).
+> This fork resolves the vulnerability by migrating from the fabric8 Kubernetes client to the official `io.kubernetes:client-java` SDK (v26.0.0+).
 
 ## Overview
 
@@ -14,6 +15,15 @@ It provides the following features:
 * Variable substitution for the resource configurations, allowing you to do dynamic resource deployment.
 * Docker login credentials management for the private Docker registry.
 * No need to install the `kubectl` tool on the Jenkins slave nodes.
+
+## Breaking changes in version 3.0.0
+
+This plugin has migrated from the [fabric8 Kubernetes Client](https://github.com/fabric8io/kubernetes-client) to the official [Kubernetes Java Client](https://github.com/kubernetes-client/java) (`io.kubernetes:client-java`). The following changes may affect your existing configurations:
+
+- **Kubernetes SDK upgrade**: The official Kubernetes Java Client v26.0.0 replaces the fabric8 client, bringing improved API compatibility and long-term support.
+- **Jenkins baseline**: The minimum required Jenkins version is now **2.555.1**.
+- **Java requirement**: Java **21** (or later) is now required to build and run the plugin.
+- Some legacy Kubernetes API versions may no longer be supported. Please ensure your resource manifests use supported API versions.
 
 ## Breaking changes in version 1.0.0
 
@@ -27,6 +37,8 @@ This plugin depends on [Kubernetes & OpenShift 3 Java Client](https://github.com
 
 * A Kubernetes cluster.
 * Kubernetes resource configurations to be deployed.
+* Jenkins **2.555.1** or later.
+* Java **21** or later (for building and running).
 
 ## Configure the Plugin
 
@@ -45,7 +57,7 @@ This plugin depends on [Kubernetes & OpenShift 3 Java Client](https://github.com
    * Fetch the kubeconfig from a remote SSH server
 1. Fill in the "Config Files" with the configuration file paths. Split multiple entries with comma (`,`).
    [Ant glob syntax](https://ant.apache.org/manual/dirtasks.html#patterns) is supported for path patterns.
-1. By checking "Enable Variable Substitution in Config", the variables (in the form of `$VARIABLE` or `${VARIABLE})
+1. By checking "Enable Variable Substitution in Config", the variables (in the form of `$VARIABLE` or `${VARIABLE}`)
    in the configuration files will be replaced with the values from corresponding environment variables before
    they are fed to the Kubernetes management API. This allows you to dynamically update the configurations according
    to each Jenkins task, for example, using the Jenkins build number as the image tag to be pulled.
@@ -59,7 +71,7 @@ This plugin depends on [Kubernetes & OpenShift 3 Java Client](https://github.com
       in your configuration with the "Enable Variable Substitution in Config" option turned on.
 
       ```yaml
-      apiVersion: extensions/v1beta1
+      apiVersion: apps/v1
       kind: Deployment
       metadata:
         name: sample-k8s-deployment
@@ -90,19 +102,19 @@ This plugin depends on [Kubernetes & OpenShift 3 Java Client](https://github.com
 The following resource types are supported by the plugin:
 
 * ConfigMap (v1)
-* Daemon Set (apps/v1、extensions/v1beta1、apps/v1beta2)
-* Deployment (apps/v1、apps/v1beta1、extensions/v1beta1、apps/v1beta2)
-* Ingress (extensions/v1beta1、 networking.k8s.io/v1beta1)
-* Job (batch/v1) update requires apiserver support [server dryRun](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)
+* Daemon Set (apps/v1)
+* Deployment (apps/v1)
+* Ingress (networking.k8s.io/v1, networking.k8s.io/v1beta1)
+* Job (batch/v1) — update requires apiserver support [server dryRun](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)
 * Namespace (v1)
-* Pod (v1) update requires apiserver support [server dryRun](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)
-* Replica Set (apps/v1、extensions/v1beta1、apps/v1beta2)
-* Replication Controller (v1) - No rolling-update support. If that's required, consider using [Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-update-deployment).
-* Secret (v1) - The plugin also provides secrets configuration.
+* Pod (v1) — update requires apiserver support [server dryRun](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)
+* Replica Set (apps/v1)
+* Replication Controller (v1) — No rolling-update support. If that's required, consider using [Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-update-deployment).
+* Secret (v1) — The plugin also provides secrets configuration.
 * Service (v1)
-* Stateful Set (apps/v1、apps/v1beta1、apps/v1beta2) apps/v1 Job update requires apiserver support [server dryRun](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)
-* Cron Job (batch/v1beta1、batch/v2alpha1)
-* Horizontal Pod Autoscaler(autoscaling/v1、autoscaling/v2beta1、autoscaling/v2beta2)
+* Stateful Set (apps/v1)
+* Cron Job (batch/v1)
+* Horizontal Pod Autoscaler (autoscaling/v1, autoscaling/v2)
 * Network Policy (networking.k8s.io/v1)
 * Persistent Volume (v1)
 * Persistent Volume Claim (v1)
@@ -111,7 +123,6 @@ The following resource types are supported by the plugin:
 * Role (rbac.authorization.k8s.io/v1)
 * RoleBinding (rbac.authorization.k8s.io/v1)
 * ServiceAccount (v1)
-
 
 In the context of continuous integration & continuous deployment, only those resources that need to be updated
 regularly should be placed in Jenkins deployment. So most of the time the plugin should mainly deal with resources of type **Deployment**.
@@ -195,6 +206,38 @@ withCredentials([kubeconfigFile(credentialsId: 'acs-ssh-folder', variable: 'KUBE
     sh '''cat $KUBECONFIG'''
 }
 ```
+
+## Building from Source
+
+The plugin requires **Java 21** and **Maven 3.9+** to build.
+
+The build version is composed of the base version (`3.0.0`) and the git commit ID using the `changelist` property.
+The final artifact version will be `3.0.0.v{git-short-hash}` (e.g. `3.0.0.v156dab4`).
+
+Build locally:
+
+```bash
+mvn package -Dchangelist=.v$(git rev-parse --short HEAD)
+```
+
+Skip tests for a faster build:
+
+```bash
+mvn package -DskipTests -Dchangelist=.v$(git rev-parse --short HEAD)
+```
+
+Build using docker:
+
+```bash
+docker run --rm -it \
+  -v "$PWD":/usr/src/kubernetes-cd \
+  -v "$PWD/target:/usr/src/kubernetes-cd/target" \
+  -v "$HOME/.m2":/root/.m2 \
+  -w /usr/src/kubernetes-cd \
+  maven:3.9.9-eclipse-temurin-21 \
+  mvn package -Dchangelist=.v$(git rev-parse --short HEAD)
+```
+
 ## Data/Telemetry
 
 Kubernetes Continuous Deploy Plugin collects usage data and sends it to Microsoft to help improve our products and services. Read our [privacy statement](http://go.microsoft.com/fwlink/?LinkId=521839) to learn more.
@@ -203,7 +246,8 @@ You can turn off usage data collection in Manage Jenkins -> Configure System -> 
 
 ## Contributing
 
-Build the plugin using docker as follows:
-````bash
-docker run --rm -it -v "$PWD":/usr/src/kubernetes-cd -v "$PWD/target:/usr/src/kubernetes-cd/target" -v "$HOME/.m2":/root/.m2 -w /usr/src/kubernetes-cd maven:3.5.4-jdk-8 mvn package
-````
+Please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

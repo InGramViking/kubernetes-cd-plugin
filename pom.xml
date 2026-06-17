@@ -15,7 +15,7 @@
 
     <properties>
         <revision>3.0.0</revision>
-        <changelist>-SNAPSHOT</changelist>
+        <changelist></changelist>
         <!-- Baseline Jenkins version you use to build the plugin. Users must have this version or newer to run. -->
         <jenkins.version>2.555.1</jenkins.version>
         <java.level>21</java.level>
@@ -32,7 +32,7 @@
 
     <name>Kubernetes Continuous Deploy Plugin</name>
     <description>A Jenkins plugin to deploy configurations to Kubernetes cluster.</description>
-    <url>https://github.com/jenkinsci/kubernetes-cd-plugin</url>
+    <url>https://github.com/InGramViking/kubernetes-cd-plugin</url>
 
     <licenses>
         <license>
@@ -43,9 +43,8 @@
 
     <developers>
         <developer>
-            <id>xuzhang</id>
-            <name>Xu Zhang</name>
-            <email>xuzhang3@microsoft.com</email>
+            <id>InGramViking</id>
+            <name>InGramViking</name>
         </developer>
     </developers>
 

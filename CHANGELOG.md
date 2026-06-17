@@ -1,5 +1,22 @@
 # Kubernetes Continuous Deploy Plugin Changelog
 
+## Version 3.0.0, 2025-06-17
+* **Security fix**: Resolved CVE-2021-25738 (SECURITY-2448) — remote code execution vulnerability via unsafe YAML deserialization
+* **Breaking change**: Migrated from fabric8 Kubernetes Client to official `io.kubernetes:client-java` v26.0.0
+* **Breaking change**: Minimum Jenkins version bumped to **2.555.1**
+* **Breaking change**: Minimum Java version bumped to **21**
+* **Breaking change**: Removed support for legacy Kubernetes API versions (`extensions/v1beta1`, `apps/v1beta1`, `apps/v1beta2`)
+* Removed deprecated credential types: `ConfigFileCredentials`, `TextCredentials`, `SSHCredentials`
+* Upgraded resource API versions:
+  - DaemonSet → apps/v1
+  - Deployment → apps/v1
+  - ReplicaSet → apps/v1
+  - Ingress → networking.k8s.io/v1
+  - CronJob → batch/v1
+  - HPA → autoscaling/v1, autoscaling/v2
+* Updated build to Java 21 and Maven 3.9+
+* Various dependency upgrades and code improvements
+
 ## Version 2.3.1, 2020-10-27
 * Bump guava from 20.0 to 24.1.1-jre
 * Update maintainer
